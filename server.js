@@ -29,7 +29,17 @@ const imageScaleMap = {
     "Frieren": 1.42,
     "Gowther": 0.7,
 };
-const getImageScale = (name) => imageScaleMap[name] || 1;
+const getImageScale = (name) => {
+    // 1. ถ้ามีการตั้งค่าสเกลเฉพาะตัวไว้ (เช่น Frieren, Gowther) ให้ใช้ค่านั้นก่อน
+    if (imageScaleMap[name]) return imageScaleMap[name];
+    
+    // 2. ถ้าเป็นตัวละครที่ไม่มีใน imageMap (Unknown Unit) ให้ปรับตัวเลขตรงนี้ให้น้อยกว่า 1
+    // ลองเปลี่ยนเลข 0.8 หรือ 0.9 ดูจนกว่าขนาดจะพอดีครับ
+    if (!imageMap[name]) return 0.8; 
+    
+    // 3. ตัวละครปกติที่มีในระบบ (ขนาด 100% ปกติ)
+    return 1;
+};
 
 // ฟังก์ชันสำหรับดึงรูประบุตัวละคร ถ้าหาไม่เจอให้ใช้รูป Default
 const getImageUrl = (name) => {
