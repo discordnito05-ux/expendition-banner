@@ -19,6 +19,7 @@ const imageMap = {
     "Gowther": "https://s6.imgcdn.dev/YFqw3i.png",
     "Inumaki": "https://s6.imgcdn.dev/YFqcTS.png",
     "Yuta": "https://s6.imgcdn.dev/YFquRC.png",
+    "Diane": "https://s6.imgcdn.dev/YFHui0.png"
     // เพิ่มรายชื่อตัวละครอื่นๆ และลิงก์รูปให้ครบ (ชื่อต้องตรงกับที่ .lua ส่งมาทุกตัวอักษร)
 };
 
