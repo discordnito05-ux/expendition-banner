@@ -1,7 +1,9 @@
 const express = require('express');
+const path = require('path');
 const app = express();
 
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ข้อมูลจำลอง (ตัวแปรนี้จะเก็บข้อมูลล่าสุดที่สคริปต์ส่งมา)
 let currentBanners = {
@@ -53,6 +55,96 @@ const escapeHtml = (str = '') => String(str)
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
+const emptyStateHtml = `
+    <div class="empty-state">
+        <div class="empty-icon">✦</div>
+        <p class="empty-title">ยังไม่มี Mythic ในตู้นี้</p>
+        <p class="empty-sub">ระบบจะแสดงผลทันทีที่มีการสุ่มได้</p>
+    </div>`;
+
+// การ์ดตัวละครหนึ่งตัวบนสเตจ (role: 'front' = ตัวเด่น/อยู่หน้าสุด, 'back' = อยู่ข้างหลัง)
+const renderStandee = (name, { role, left, bottom = 5, widthPct = null, brightness = null, delay = 0 }) => {
+    const styleParts = [`left:${left}%`, `bottom:${bottom}%`, `animation-delay:${delay}s`];
+    if (widthPct) styleParts.push(`width:${widthPct}%`);
+
+    const figureStyle = brightness !== null
+        ? ` style="filter: drop-shadow(0 8px 14px rgba(0,0,0,.5)) brightness(${brightness}) saturate(.86);"`
+        : '';
+
+    const nameClass = role === 'front' ? 'char-name char-name--hero' : 'char-name';
+
+    // scale ชดเชยเฉพาะรูปที่สัดส่วนไฟล์ผิดปกติ (ดู imageScaleMap ด้านบน)
+    const imgScale = getImageScale(name);
+    // ใช้ scale() แบบ uniform ให้ตรงกับ preview.html (ไม่ใช่ scaleY() ซึ่งจะยืดแค่แนวตั้งแล้วภาพเบี้ยว)
+    const imgStyle = imgScale !== 1
+        ? ` style="transform: scale(${imgScale}); transform-origin: bottom center;"`
+        : '';
+
+    return `
+        <div class="standee standee--${role}" style="${styleParts.join(';')}">
+            <div class="standee-figure"${figureStyle}>
+                <img src="${getImageUrl(name)}" alt="${escapeHtml(name)}" loading="lazy"${imgStyle}
+                     onerror="this.onerror=null;this.src='${PLACEHOLDER_SVG}';this.style.filter='none';this.style.transform='none';">
+            </div>
+            <div class="standee-tag">
+                <p class="${nameClass}">${escapeHtml(name)}</p>
+                <p class="char-rarity"><span class="rarity-mythic">Mythic</span> <span class="rarity-unit">Unit</span></p>
+            </div>
+        </div>`;
+};
+
+// Standard Banner: ตัวแรก (index 0) ยืนหน้าสุด/ใหญ่สุด ตัวถัดไปยืนซ้อนอยู่ข้างหลัง สลับซ้าย-ขวา
+const renderStandardStage = (characters) => {
+    if (!characters || characters.length === 0) return emptyStateHtml;
+
+    const [front, ...back] = characters;
+
+    const frontHtml = renderStandee(front, { role: 'front', left: 50, bottom: 3, delay: .22 });
+
+    const backHtml = back.map((name, i) => {
+        const side = i % 2 === 0 ? -1 : 1;          // ซ้าย, ขวา, ซ้าย, ขวา, ...
+        const depth = Math.floor(i / 2) + 1;         // ยิ่งลึก (ตัวที่ 4-5 เป็นต้นไป) ยิ่งเล็ก/มัวลง
+        const spread = Math.min(44, 24 + (depth - 1) * 15);
+        const left = 50 + side * spread;
+        const widthPct = Math.max(20, 38 - (depth - 1) * 6);
+        const brightness = Math.max(0.6, 0.84 - (depth - 1) * 0.12);
+        const bottom = 7 + (depth - 1) * 2;
+
+        return renderStandee(name, { role: 'back', left, bottom, widthPct, brightness, delay: i * 0.06 });
+    }).join('');
+
+    // back ก่อน แล้วค่อย front ทับ (z-index ของ .standee--front การันตีอยู่หน้าสุดอยู่แล้ว)
+    return `
+        <div class="standee-stage">
+            <div class="stage-rays"></div>
+            ${backHtml}
+            ${frontHtml}
+            <div class="stage-floor"></div>
+        </div>`;
+};
+
+// Mini Banner: ปกติมีตัวเดียว ไม่ต้องจัดลำดับหน้า-หลัง เลยให้ทุกตัวอยู่ "เลเยอร์เดียวกัน" เรียงเท่าๆ กัน
+const renderMiniStage = (characters) => {
+    if (!characters || characters.length === 0) return emptyStateHtml;
+
+    const n = characters.length;
+    const html = characters.map((name, i) => {
+        const left = n === 1 ? 50 : ((i + 1) / (n + 1)) * 100;
+        const widthPct = n === 1 ? null : Math.max(16, Math.min(30, 60 / n));
+        return renderStandee(name, { role: 'front', left, bottom: 3, widthPct, delay: i * 0.06 });
+    }).join('');
+
+    return `
+        <div class="standee-stage standee-stage--mini">
+            <div class="stage-rays"></div>
+            ${html}
+            <div class="stage-floor"></div>
+        </div>`;
+};
+
+// เวลาปัจจุบัน แยกเป็นฟังก์ชันกลาง ใช้ทั้งหน้าเว็บหลักและ /api/state เพื่อให้ค่าตรงกันเป๊ะๆ
+const getNowText = () => new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
 // 📌 2. API สำหรับรับข้อมูลจาก Roblox Script (POST Request)
 app.post('/update', (req, res) => {
     // แนะนำ: ควรเช็ค Password / API Key ตรงนี้เพื่อป้องกันคนอื่นยิงข้อมูลมั่วๆ
@@ -70,97 +162,22 @@ app.post('/update', (req, res) => {
     res.status(200).json({ message: "Success" });
 });
 
-// 📌 3. หน้าเว็บสำหรับแสดงผล (GET Request)
+// 📌 3. API สำหรับให้หน้าเว็บดึงข้อมูลล่าสุดแบบไม่ต้อง reload ทั้งหน้า
+// (หน้าเว็บจะเรียกอันนี้ทุก 10 วิแทนการ location.reload() เพื่อไม่ให้ตัวจับเวลาแจ้งเตือน 15 นาทีฝั่ง client รีเซ็ตทุกครั้ง)
+app.get('/api/state', (req, res) => {
+    res.json({
+        standardHtml: renderStandardStage(currentBanners.Standard),
+        miniHtml: renderMiniStage(currentBanners.Mini),
+        standardCount: currentBanners.Standard.length,
+        miniCount: currentBanners.Mini.length,
+        now: getNowText(),
+    });
+});
+
+// 📌 4. หน้าเว็บสำหรับแสดงผล (GET Request)
 app.get('/', (req, res) => {
 
-    const emptyStateHtml = `
-        <div class="empty-state">
-            <div class="empty-icon">✦</div>
-            <p class="empty-title">ยังไม่มี Mythic ในตู้นี้</p>
-            <p class="empty-sub">ระบบจะแสดงผลทันทีที่มีการสุ่มได้</p>
-        </div>`;
-
-    // การ์ดตัวละครหนึ่งตัวบนสเตจ (role: 'front' = ตัวเด่น/อยู่หน้าสุด, 'back' = อยู่ข้างหลัง)
-    const renderStandee = (name, { role, left, bottom = 5, widthPct = null, brightness = null, delay = 0 }) => {
-        const styleParts = [`left:${left}%`, `bottom:${bottom}%`, `animation-delay:${delay}s`];
-        if (widthPct) styleParts.push(`width:${widthPct}%`);
-
-        const figureStyle = brightness !== null
-            ? ` style="filter: drop-shadow(0 8px 14px rgba(0,0,0,.5)) brightness(${brightness}) saturate(.86);"`
-            : '';
-
-        const nameClass = role === 'front' ? 'char-name char-name--hero' : 'char-name';
-
-        // scale ชดเชยเฉพาะรูปที่สัดส่วนไฟล์ผิดปกติ (ดู imageScaleMap ด้านบน)
-        const imgScale = getImageScale(name);
-        // ใช้ scale() แบบ uniform ให้ตรงกับ preview.html (ไม่ใช่ scaleY() ซึ่งจะยืดแค่แนวตั้งแล้วภาพเบี้ยว)
-        const imgStyle = imgScale !== 1
-            ? ` style="transform: scale(${imgScale}); transform-origin: bottom center;"`
-            : '';
-
-        return `
-            <div class="standee standee--${role}" style="${styleParts.join(';')}">
-                <div class="standee-figure"${figureStyle}>
-                    <img src="${getImageUrl(name)}" alt="${escapeHtml(name)}" loading="lazy"${imgStyle}
-                         onerror="this.onerror=null;this.src='${PLACEHOLDER_SVG}';this.style.filter='none';this.style.transform='none';">
-                </div>
-                <div class="standee-tag">
-                    <p class="${nameClass}">${escapeHtml(name)}</p>
-                    <p class="char-rarity"><span class="rarity-mythic">Mythic</span> <span class="rarity-unit">Unit</span></p>
-                </div>
-            </div>`;
-    };
-
-    // Standard Banner: ตัวแรก (index 0) ยืนหน้าสุด/ใหญ่สุด ตัวถัดไปยืนซ้อนอยู่ข้างหลัง สลับซ้าย-ขวา
-    const renderStandardStage = (characters) => {
-        if (!characters || characters.length === 0) return emptyStateHtml;
-
-        const [front, ...back] = characters;
-
-        const frontHtml = renderStandee(front, { role: 'front', left: 50, bottom: 3, delay: .22 });
-
-        const backHtml = back.map((name, i) => {
-            const side = i % 2 === 0 ? -1 : 1;          // ซ้าย, ขวา, ซ้าย, ขวา, ...
-            const depth = Math.floor(i / 2) + 1;         // ยิ่งลึก (ตัวที่ 4-5 เป็นต้นไป) ยิ่งเล็ก/มัวลง
-            const spread = Math.min(44, 24 + (depth - 1) * 15);
-            const left = 50 + side * spread;
-            const widthPct = Math.max(20, 38 - (depth - 1) * 6);
-            const brightness = Math.max(0.6, 0.84 - (depth - 1) * 0.12);
-            const bottom = 7 + (depth - 1) * 2;
-
-            return renderStandee(name, { role: 'back', left, bottom, widthPct, brightness, delay: i * 0.06 });
-        }).join('');
-
-        // back ก่อน แล้วค่อย front ทับ (z-index ของ .standee--front การันตีอยู่หน้าสุดอยู่แล้ว)
-        return `
-            <div class="standee-stage">
-                <div class="stage-rays"></div>
-                ${backHtml}
-                ${frontHtml}
-                <div class="stage-floor"></div>
-            </div>`;
-    };
-
-    // Mini Banner: ปกติมีตัวเดียว ไม่ต้องจัดลำดับหน้า-หลัง เลยให้ทุกตัวอยู่ "เลเยอร์เดียวกัน" เรียงเท่าๆ กัน
-    const renderMiniStage = (characters) => {
-        if (!characters || characters.length === 0) return emptyStateHtml;
-
-        const n = characters.length;
-        const html = characters.map((name, i) => {
-            const left = n === 1 ? 50 : ((i + 1) / (n + 1)) * 100;
-            const widthPct = n === 1 ? null : Math.max(16, Math.min(30, 60 / n));
-            return renderStandee(name, { role: 'front', left, bottom: 3, widthPct, delay: i * 0.06 });
-        }).join('');
-
-        return `
-            <div class="standee-stage standee-stage--mini">
-                <div class="stage-rays"></div>
-                ${html}
-                <div class="stage-floor"></div>
-            </div>`;
-    };
-
-    const now = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const now = getNowText();
 
     const html = `
         <!DOCTYPE html>
@@ -219,6 +236,51 @@ app.get('/', (req, res) => {
                     70% { box-shadow: 0 0 0 7px rgba(74,222,128,0); }
                     100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
                 }
+
+                .status-block { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+                .sound-toggle {
+                    display: inline-flex; align-items: center; gap: 6px;
+                    font-family: inherit; font-size: 12px; font-weight: 700;
+                    color: var(--ink); background: linear-gradient(135deg, var(--gold), #ff9d5c);
+                    border: none; cursor: pointer;
+                    padding: 7px 16px; border-radius: 999px;
+                    box-shadow: 0 4px 14px rgba(255,209,102,.25);
+                    transition: transform .15s ease, box-shadow .15s ease;
+                }
+                .sound-toggle:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(255,209,102,.4); }
+                .sound-toggle:active { transform: translateY(0); }
+                .sound-toggle:focus-visible { outline: 2px solid var(--arcane-blue); outline-offset: 2px; }
+
+                /* ---------- Toast: แจ้งเตือนทุก 15 นาที ---------- */
+                .toast-container {
+                    position: fixed; top: 20px; right: 20px; z-index: 999;
+                    display: flex; flex-direction: column; gap: 10px;
+                    width: min(340px, calc(100vw - 40px));
+                    pointer-events: none;
+                }
+                .toast {
+                    display: flex; gap: 12px; align-items: flex-start;
+                    background: var(--panel-2); border: 1px solid var(--hairline);
+                    border-radius: 14px; padding: 14px 16px;
+                    box-shadow: 0 14px 32px rgba(0,0,0,.5);
+                    animation: toastIn .35s cubic-bezier(.22,.85,.3,1) both;
+                    pointer-events: auto;
+                }
+                .toast.toast--out { animation: toastOut .3s ease both; }
+                .toast-icon {
+                    flex: none; width: 36px; height: 36px; border-radius: 10px;
+                    display: flex; align-items: center; justify-content: center;
+                    font-size: 16px;
+                    background: linear-gradient(135deg, var(--gold), #ff8f6b);
+                    box-shadow: 0 0 14px rgba(255,209,102,.4);
+                }
+                .toast-body { flex: 1; min-width: 0; }
+                .toast-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+                .toast-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
+                .toast-time { font-size: 11px; color: var(--text-dim); white-space: nowrap; flex: none; }
+                .toast-message { margin-top: 3px; font-size: 12px; color: var(--text-dim); line-height: 1.4; }
+                @keyframes toastIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+                @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(24px); } }
 
                 main { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 32px; }
 
@@ -356,19 +418,22 @@ app.get('/', (req, res) => {
                     .standee--back { width: clamp(148px, 43%, 262px); }
                     .standee-tag .char-name { font-size: 11px; }
                     .standee-tag .char-name--hero { font-size: 13px; }
+                    .toast-container { left: 12px; right: 12px; top: 12px; width: auto; }
                 }
             </style>
         </head>
         <body>
             <div class="bg-orb orb-1"></div>
             <div class="bg-orb orb-2"></div>
+            <div id="toast-container" class="toast-container"></div>
 
             <header class="page-header">
                 <div class="logo-block">
                     <img class="site-logo" src="https://s6.imgcdn.dev/YFqIn0.png" alt="Mythic Pull Tracker">
                 </div>
                 <div class="status-block">
-                    <div class="live-status"><span class="live-dot"></span>อัปเดตอัตโนมัติทุก 10 วิ · ล่าสุด ${now}</div>
+                    <div class="live-status"><span class="live-dot"></span>อัปเดตอัตโนมัติทุก 10 วิ · ล่าสุด <span id="live-time">${now}</span></div>
+                    <button id="enable-sound-btn" class="sound-toggle" type="button">🔔 เปิดเสียงแจ้งเตือน</button>
                 </div>
             </header>
 
@@ -376,23 +441,109 @@ app.get('/', (req, res) => {
                 <section class="banner-section">
                     <div class="section-header">
                         <div class="section-title"><span class="gem-icon">💎</span><h2>Standard Banner</h2></div>
-                        <span class="count-badge">${currentBanners.Standard.length} Mythic</span>
+                        <span id="standard-count" class="count-badge">${currentBanners.Standard.length} Mythic</span>
                     </div>
-                    ${renderStandardStage(currentBanners.Standard)}
+                    <div id="standard-stage">${renderStandardStage(currentBanners.Standard)}</div>
                 </section>
 
                 <section class="banner-section">
                     <div class="section-header">
                         <div class="section-title"><span class="gem-icon">💎</span><h2>Mini Banner</h2></div>
-                        <span class="count-badge">${currentBanners.Mini.length} Mythic</span>
+                        <span id="mini-count" class="count-badge">${currentBanners.Mini.length} Mythic</span>
                     </div>
-                    ${renderMiniStage(currentBanners.Mini)}
+                    <div id="mini-stage">${renderMiniStage(currentBanners.Mini)}</div>
                 </section>
             </main>
 
             <script>
-                // รีเฟรชหน้าเว็บอัตโนมัติทุกๆ 10 วินาทีเพื่อดูของใหม่
-                setTimeout(() => { location.reload(); }, 10000);
+                // ตั้งค่าการแจ้งเตือน (แก้ข้อความ/ไอคอน/ความถี่ได้ตรงนี้ที่เดียว)
+                const NOTIFY = {
+                    intervalMinutes: 15,
+                    icon: '🔔',
+                    title: 'Banner รีเซ็ตแล้ว!',
+                    message: 'ครบรอบแจ้งเตือนทุก 15 นาที ตรวจสอบตู้ Mythic ล่าสุดได้เลย',
+                };
+
+                const soundBtn = document.getElementById('enable-sound-btn');
+                const notifSound = new Audio('/notification.mp3');
+                let audioUnlocked = false;
+
+                // เบราว์เซอร์ส่วนใหญ่บล็อกการเล่นเสียงที่สั่งจากโค้ดจนกว่าผู้ใช้จะคลิกอะไรสักอย่างในหน้าก่อน
+                // ปุ่มนี้เลยทำหน้าที่ "ปลดล็อก" เสียงไว้ล่วงหน้า ครั้งเดียวพอ แล้วจะซ่อนตัวเองไป
+                function unlockAudio() {
+                    if (audioUnlocked) return;
+                    notifSound.play().then(() => {
+                        notifSound.pause();
+                        notifSound.currentTime = 0;
+                        audioUnlocked = true;
+                        if (soundBtn) soundBtn.remove();
+                    }).catch(() => { /* ยังปลดล็อกไม่สำเร็จ ให้ลองใหม่ตอนกดครั้งถัดไป */ });
+                }
+                if (soundBtn) soundBtn.addEventListener('click', unlockAudio);
+
+                function showToast({ icon, title, time, message }) {
+                    const container = document.getElementById('toast-container');
+                    if (!container) return;
+
+                    const el = document.createElement('div');
+                    el.className = 'toast';
+                    el.innerHTML = ''
+                        + '<div class="toast-icon">' + icon + '</div>'
+                        + '<div class="toast-body">'
+                        +   '<div class="toast-head">'
+                        +     '<p class="toast-title">' + title + '</p>'
+                        +     '<span class="toast-time">' + time + '</span>'
+                        +   '</div>'
+                        +   '<p class="toast-message">' + message + '</p>'
+                        + '</div>';
+                    container.appendChild(el);
+
+                    setTimeout(() => {
+                        el.classList.add('toast--out');
+                        el.addEventListener('animationend', () => el.remove(), { once: true });
+                    }, 8000);
+                }
+
+                // เช็คว่าเวลาปัจจุบัน (จากข้อความ "ล่าสุด" บนหน้าเว็บ) ตกที่รอบ 15 นาทีพอดีหรือยัง
+                // ใช้ hh:mm เป็น key กันยิงซ้ำหลายครั้งภายในรอบ 10 วิเดียวกัน
+                let lastFiredBoundary = null;
+                function checkNotifyBoundary(nowText) {
+                    const [hh, mm] = nowText.split(':').map(Number);
+                    if (mm % NOTIFY.intervalMinutes !== 0) return;
+
+                    const key = hh + ':' + mm;
+                    if (key === lastFiredBoundary) return;
+                    lastFiredBoundary = key;
+
+                    if (audioUnlocked) {
+                        notifSound.currentTime = 0;
+                        notifSound.play().catch(() => {});
+                    }
+                    showToast({ icon: NOTIFY.icon, title: NOTIFY.title, time: 'ตอนนี้', message: NOTIFY.message });
+                }
+
+                // ดึงข้อมูลล่าสุดทุก 10 วิ แล้วแปะทับเฉพาะส่วนที่เปลี่ยน แทนการ location.reload()
+                // (สำคัญ: ถ้า reload ทั้งหน้า ตัวแปร lastFiredBoundary/audioUnlocked ด้านบนจะรีเซ็ตทุก 10 วิ
+                //  ทำให้ตัวจับเวลาแจ้งเตือน 15 นาทีทำงานไม่ได้เลย)
+                async function refreshState() {
+                    try {
+                        const res = await fetch('/api/state');
+                        const data = await res.json();
+
+                        document.getElementById('standard-stage').innerHTML = data.standardHtml;
+                        document.getElementById('mini-stage').innerHTML = data.miniHtml;
+                        document.getElementById('standard-count').textContent = data.standardCount + ' Mythic';
+                        document.getElementById('mini-count').textContent = data.miniCount + ' Mythic';
+                        document.getElementById('live-time').textContent = data.now;
+
+                        checkNotifyBoundary(data.now);
+                    } catch (err) {
+                        console.error('อัปเดตข้อมูลไม่สำเร็จ:', err);
+                    }
+                }
+
+                refreshState();
+                setInterval(refreshState, 10000);
             </script>
         </body>
         </html>
